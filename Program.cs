@@ -1,10 +1,5 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using CommandLine;
 
 class Options
@@ -13,9 +8,9 @@ class Options
     public int MinLength { get; set; }
 
     [Option('p', "path", Default = "", HelpText = "Folder path")]
-    public string FolderPath { get; set; }
+    public string? FolderPath { get; set; }
 
-    [Option('pl', "parallelism", Default = 0, HelpText = "Max degree of parallelism")]
+    [Option('c', "parallelism", Default = 0, HelpText = "Max degree of parallelism")]
     public int MaxParallelism { get; set; }
 }
 
@@ -30,13 +25,13 @@ class Program
                 string folderPath = string.IsNullOrEmpty(options.FolderPath) ? Environment.CurrentDirectory : options.FolderPath;
 
                 // Компиляция регулярного выражения один раз
-                var wordPattern = new Regex(@"\b\w{" + (options.MinLength + 1) + @",}\b", RegexOptions.Compiled);
+                var wordPattern = new Regex(@"\b\w{" + options.MinLength + @",}\b", RegexOptions.Compiled);
 
                 // Получение списка файлов в папке
                 var files = Directory.GetFiles(folderPath, "*.txt");
 
-                // Словарь для хранения частотности слов
-                ConcurrentDictionary<string, int> wordFrequency = new ConcurrentDictionary<string, int>();
+                // Коллекция для хранения всех слов
+                var wordsBag = new ConcurrentBag<string>();
 
                 // Установка максимального количества параллельных потоков
                 var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = options.MaxParallelism == 0 ? Environment.ProcessorCount - 1 : options.MaxParallelism }; 
@@ -56,21 +51,23 @@ class Program
 
                             foreach (var word in words)
                             {
-                                wordFrequency.AddOrUpdate(word, 1, (key, oldValue) => oldValue + 1);
+                                wordsBag.Add(word);
                             }
                         }
                     }
                 });
 
                 // Сортировка слов по частотности и выбор топ-10
-                var topWords = wordFrequency.OrderByDescending(kvp => kvp.Value)
-                    .Take(10);
+                var topWords = wordsBag.GroupBy(word => word)
+                               .Select(group => new { Word = group.Key, Count = group.Count() })
+                               .OrderByDescending(item => item.Count)
+                               .Take(10);
 
                 // Вывод результата
-                Console.WriteLine($"Top 10 most frequently used words longer than {minLength} characters:");
-                foreach (var kvp in topWords)
+                Console.WriteLine($"10 most frequently used words of {options.MinLength} or more characters:");
+                foreach (var item in topWords)
                 {
-                    Console.WriteLine($"{kvp.Key}: {kvp.Value}");
+                    Console.WriteLine($"{item.Word}: {item.Count}");
                 }
             });
     }
