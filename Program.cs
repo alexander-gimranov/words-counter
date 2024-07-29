@@ -16,6 +16,13 @@ class Options
 
 class Program
 {
+    private static readonly ManualResetEvent evtNewFile = new ManualResetEvent(false);
+    private static readonly ManualResetEvent evtAllFiles = new ManualResetEvent(false);
+
+    private static readonly Dictionary<string, int> allWordsFrequency = new Dictionary<string, int>();
+
+    private static readonly ConcurrentQueue<Dictionary<string, int>> queue = new ConcurrentQueue<Dictionary<string, int>>();
+
     static void Main(string[] args)
     {
         Parser.Default.ParseArguments<Options>(args)
@@ -36,12 +43,16 @@ class Program
                 // Установка максимального количества параллельных потоков
                 var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = options.MaxParallelism == 0 ? Environment.ProcessorCount - 1 : options.MaxParallelism }; 
 
+                var messageProcessorThread = new Thread(MessageProcessor);
+                messageProcessorThread.Start();
+
                 // Обработка файлов в многопоточном режиме
                 Parallel.ForEach(files, parallelOptions, file =>
                 {
                     using (var reader = new StreamReader(file))
                     {
-                        string line;
+                        string? line;
+                        var wordsFrequency = new Dictionary<string, int>();
                         while ((line = reader.ReadLine()) != null)
                         {
                             // Использование скомпилированного регулярного выражения для разбиения текста на слова
@@ -51,24 +62,86 @@ class Program
 
                             foreach (var word in words)
                             {
-                                wordsBag.Add(word);
+                                if (wordsFrequency.TryGetValue(word, out var count))
+                                {
+                                    wordsFrequency[word] = count + 1;
+                                }
+                                else
+                                {
+                                    wordsFrequency.Add(word, 1);
+                                }
                             }
                         }
+
+                        // Добавляем статистику файла в очередь
+                        queue.Enqueue(wordsFrequency);
+
+                        // Сигнализируем, что новыя статистика файла добавлен
+                        evtNewFile.Set();
                     }
                 });
 
+                // Сигнализируем, что все файлы обработаны
+                evtAllFiles.Set();                
+            });
+    }
+
+    static void MessageProcessor()
+    {
+        while (true)
+        {
+            // Ожидаем сигнал о новом файле или завершении всех файлов
+            int index = WaitHandle.WaitAny(new WaitHandle[] { evtNewFile, evtAllFiles });
+
+            // Проверяем, какой сигнал получен
+            if (index == 0) // evtNewFile
+            {
+                // Обрабатываем все файлы в очереди
+                ProcessFileStatistics();
+                
+                // Сбрасываем событие, чтобы ждать следующего файла
+                evtNewFile.Reset();
+            } else if (index == 1) // evtAllFiles
+            {
+                // Обрабатываем оставшиеся файлы в очереди
+                ProcessFileStatistics();
+                
+                evtAllFiles.Reset();
+
                 // Сортировка слов по частотности и выбор топ-10
-                var topWords = wordsBag.GroupBy(word => word)
-                               .Select(group => new { Word = group.Key, Count = group.Count() })
-                               .OrderByDescending(item => item.Count)
-                               .Take(10);
+                var topWords = allWordsFrequency
+                                .OrderByDescending(kvp => kvp.Value)
+                                .Take(10);
 
                 // Вывод результата
-                Console.WriteLine($"10 most frequently used words of {options.MinLength} or more characters:");
-                foreach (var item in topWords)
+                Console.WriteLine($"10 most frequently used words:");
+                foreach (var word in topWords)
                 {
-                    Console.WriteLine($"{item.Word}: {item.Count}");
+                    Console.WriteLine($"{word.Key}: {word.Value}");
                 }
-            });
+                
+                break;
+            }
+
+            Thread.Sleep(200);
+        }
+    }
+
+    protected static void ProcessFileStatistics()
+    {
+        while (queue.TryDequeue(out var wordsFrequency))
+        {
+            foreach (var (word, frequency) in wordsFrequency)
+            {
+                if (allWordsFrequency.TryGetValue(word, out var oldValue))
+                {
+                    allWordsFrequency[word] = oldValue + frequency;
+                }
+                else
+                {
+                    allWordsFrequency.Add(word, frequency);
+                }
+            }
+        }
     }
 }
