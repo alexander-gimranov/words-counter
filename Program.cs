@@ -23,6 +23,8 @@ class Program
 
     private static readonly ConcurrentQueue<Dictionary<string, int>> queue = new ConcurrentQueue<Dictionary<string, int>>();
 
+    private static readonly Thread messageProcessorThread = new Thread(MessageProcessor);
+
     static void Main(string[] args)
     {
         Parser.Default.ParseArguments<Options>(args)
@@ -32,18 +34,14 @@ class Program
                 string folderPath = string.IsNullOrEmpty(options.FolderPath) ? Environment.CurrentDirectory : options.FolderPath;
 
                 // Компиляция регулярного выражения один раз
-                var wordPattern = new Regex(@"\b\w{" + options.MinLength + @",}\b", RegexOptions.Compiled);
+                var wordPattern = new Regex(@"\w{" + options.MinLength + @",}", RegexOptions.Compiled);
 
                 // Получение списка файлов в папке
                 var files = Directory.GetFiles(folderPath, "*.txt");
 
-                // Коллекция для хранения всех слов
-                var wordsBag = new ConcurrentBag<string>();
-
                 // Установка максимального количества параллельных потоков
                 var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = options.MaxParallelism == 0 ? Environment.ProcessorCount - 1 : options.MaxParallelism }; 
 
-                var messageProcessorThread = new Thread(MessageProcessor);
                 messageProcessorThread.Start();
 
                 // Обработка файлов в многопоточном режиме
@@ -82,11 +80,14 @@ class Program
                 });
 
                 // Сигнализируем, что все файлы обработаны
-                evtAllFiles.Set();                
+                evtAllFiles.Set();
+
+                var outputStatisticsThread = new Thread(OutputStatistics);
+                outputStatisticsThread.Start();
             });
     }
 
-    static void MessageProcessor()
+    private static void MessageProcessor()
     {
         while (true)
         {
@@ -107,18 +108,6 @@ class Program
                 ProcessFileStatistics();
                 
                 evtAllFiles.Reset();
-
-                // Сортировка слов по частотности и выбор топ-10
-                var topWords = allWordsFrequency
-                                .OrderByDescending(kvp => kvp.Value)
-                                .Take(10);
-
-                // Вывод результата
-                Console.WriteLine($"10 most frequently used words:");
-                foreach (var word in topWords)
-                {
-                    Console.WriteLine($"{word.Key}: {word.Value}");
-                }
                 
                 break;
             }
@@ -127,7 +116,7 @@ class Program
         }
     }
 
-    protected static void ProcessFileStatistics()
+    private static void ProcessFileStatistics()
     {
         while (queue.TryDequeue(out var wordsFrequency))
         {
@@ -142,6 +131,24 @@ class Program
                     allWordsFrequency.Add(word, frequency);
                 }
             }
+        }
+    }
+
+    private static void OutputStatistics()
+    {
+        if (messageProcessorThread.ThreadState != ThreadState.Unstarted)
+            messageProcessorThread.Join();
+
+        // Сортировка слов по частотности и выбор топ-10
+        var topWords = allWordsFrequency
+                        .OrderByDescending(kvp => kvp.Value)
+                        .Take(10);
+
+        // Вывод результата
+        Console.WriteLine($"10 most frequently used words:");
+        foreach (var word in topWords)
+        {
+            Console.WriteLine($"{word.Key}: {word.Value}");
         }
     }
 }
